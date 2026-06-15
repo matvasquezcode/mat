@@ -68,16 +68,36 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Anonymous client id used to identify "you" on the leaderboard and for
+// Stripe checkout — no login required.
+const CLIENT_ID_KEY = "curiosity_client_id";
+
+function getClientId() {
+  try {
+    let id = localStorage.getItem(CLIENT_ID_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(CLIENT_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return "anonymous";
+  }
+}
+
 // ─── AI GENERATOR ──────────────────────────────────────────────────────────
 // Generates a lesson via a backend proxy (keeps the Anthropic API key server-side).
 // Falls back to a local mock lesson if the proxy isn't available, so the app
 // stays demoable without a backend.
-async function generateLesson(topicLabel, hint = "") {
+//
+// `topicId` + no `hint` marks one of the day's 3 free lessons: the backend
+// caches these per-day so every visitor shares the same generation.
+async function generateLesson(topicLabel, topicId, hint = "") {
   try {
     const res = await fetch("/api/generate-lesson", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic: topicLabel, hint }),
+      body: JSON.stringify({ topic: topicLabel, topicId, hint }),
     });
     if (!res.ok) throw new Error(`API error ${res.status}`);
     return await res.json();
@@ -175,6 +195,33 @@ function PrimaryButton({ color = T.purple, onClick, children, style, ...props })
 // ─── PAYWALL ───────────────────────────────────────────────────────────────
 function Paywall({ onUpgrade, onClose }) {
   const [yearly, setYearly] = useState(false);
+  const [checkoutError, setCheckoutError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const startCheckout = async () => {
+    setLoading(true);
+    setCheckoutError(null);
+    try {
+      const res = await fetch("/api/create-checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-user-id": getClientId() },
+        body: JSON.stringify({ yearly }),
+      });
+      if (res.status === 501) {
+        // Stripe isn't configured on the server — fall back to the local demo unlock.
+        onUpgrade();
+        return;
+      }
+      if (!res.ok) throw new Error(`checkout error ${res.status}`);
+      const { url } = await res.json();
+      window.location.href = url;
+    } catch (err) {
+      console.error("startCheckout failed:", err);
+      setCheckoutError("Couldn't start checkout. Try again in a moment.");
+      setLoading(false);
+    }
+  };
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 200, display: "flex", alignItems: "flex-end", backdropFilter: "blur(8px)" }}>
       <div style={{ background: T.surface, borderRadius: "28px 28px 0 0", padding: "32px 22px 44px", width: "100%", borderTop: "1px solid rgba(155,109,255,0.3)", maxHeight: "88vh", overflowY: "auto", position: "relative" }}>
@@ -208,9 +255,10 @@ function Paywall({ onUpgrade, onClose }) {
           <span style={{ fontSize: 15, color: T.muted }}>/{yearly ? "mo" : "month"}</span>
           {yearly && <div style={{ fontSize: 12, color: T.green, marginTop: 3, fontWeight: 700 }}>Billed $71.88/yr · Save $48</div>}
         </div>
-        <button onClick={onUpgrade} style={{ width: "100%", background: "linear-gradient(135deg, #f5c842, #f59e0b)", border: "none", borderRadius: 16, padding: "16px", color: "#000", fontWeight: 900, fontSize: 16, cursor: "pointer", fontFamily: "inherit" }}>
-          Start Premium — {yearly ? "$71.88/yr" : "$9.99/mo"}
+        <button onClick={startCheckout} disabled={loading} style={{ width: "100%", background: "linear-gradient(135deg, #f5c842, #f59e0b)", border: "none", borderRadius: 16, padding: "16px", color: "#000", fontWeight: 900, fontSize: 16, cursor: loading ? "default" : "pointer", fontFamily: "inherit", opacity: loading ? 0.7 : 1 }}>
+          {loading ? "Redirecting…" : `Start Premium — ${yearly ? "$71.88/yr" : "$9.99/mo"}`}
         </button>
+        {checkoutError && <div style={{ textAlign: "center", fontSize: 12, color: T.red, marginTop: 8 }}>{checkoutError}</div>}
         <div style={{ textAlign: "center", fontSize: 11, color: T.muted, marginTop: 10 }}>Cancel anytime</div>
       </div>
     </div>
@@ -327,7 +375,22 @@ function DepthScreen({ topic, lesson, onDone }) {
 // ─── LEADERBOARD ───────────────────────────────────────────────────────────
 function LeaderboardScreen({ totalXp, streak, onBack }) {
   const [tab, setTab] = useState("weekly"); // weekly | alltime
-  const board = LEADERBOARD_DATA.map(e => e.isYou ? { ...e, xp: totalXp } : e)
+  const [remote, setRemote] = useState(null); // null = loading/unavailable -> use fallback data
+
+  useEffect(() => {
+    fetch("/api/leaderboard")
+      .then(res => (res.ok ? res.json() : Promise.reject()))
+      .then(setRemote)
+      .catch(() => setRemote(null));
+  }, []);
+
+  const clientId = getClientId();
+  const source = remote || LEADERBOARD_DATA;
+  const hasYou = source.some(e => e.isYou || e.id === clientId);
+  const withYou = hasYou
+    ? source.map(e => (e.isYou || e.id === clientId) ? { ...e, name: "You", xp: totalXp, streak, isYou: true } : e)
+    : [...source, { id: clientId, name: "You", avatar: "🎯", country: "🌐", xp: totalXp, streak, isYou: true }];
+  const board = withYou
     .sort((a, b) => b.xp - a.xp)
     .map((e, i) => ({ ...e, rank: i + 1 }));
   const youEntry = board.find(e => e.isYou);
@@ -402,7 +465,23 @@ function LeaderboardScreen({ totalXp, streak, onBack }) {
 export default function App() {
   const saved = loadProgress();
 
-  const [isPremium, setIsPremium]   = useState(() => saved?.isPremium ?? false);
+  const [isPremium, setIsPremium]   = useState(() => {
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("premium") === "success") {
+      return true;
+    }
+    return saved?.isPremium ?? false;
+  });
+
+  // Clean up the ?premium=success/cancel param left by Stripe Checkout redirects
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("premium")) {
+      params.delete("premium");
+      const next = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (next ? `?${next}` : ""));
+    }
+  }, []);
+
   const [screen, setScreen]         = useState("home"); // home|lesson|quiz|depth|result|profile|leaderboard
   const [showPaywall, setShowPaywall] = useState(false);
   const [activeTopic, setActiveTopic] = useState(null);
@@ -426,10 +505,16 @@ export default function App() {
     return 1;
   });
 
-  // Persist progress whenever it changes
+  // Persist progress locally, and sync standing to the leaderboard backend
   useEffect(() => {
     saveProgress({ isPremium, xpByTopic, completedByTopic, streak, lastActiveDate: todayStr() });
-  }, [isPremium, xpByTopic, completedByTopic, streak]);
+
+    fetch("/api/leaderboard/me", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-user-id": getClientId() },
+      body: JSON.stringify({ name: "You", avatar: "🎯", country: "🌐", xp: totalXp, streak, isPremium }),
+    }).catch(() => {}); // leaderboard sync is best-effort
+  }, [isPremium, xpByTopic, completedByTopic, streak, totalXp]);
 
   // PRE-GENERATED daily lessons — one per free topic, ready on load
   const [dailyLessons, setDailyLessons] = useState({}); // { topicId: lesson | "loading" | "error" }
@@ -445,7 +530,7 @@ export default function App() {
 
     dailyFree.forEach(async (t) => {
       try {
-        const lesson = await generateLesson(t.label);
+        const lesson = await generateLesson(t.label, t.id);
         setDailyLessons(prev => ({ ...prev, [t.id]: lesson }));
       } catch {
         setDailyLessons(prev => ({ ...prev, [t.id]: "error" }));
@@ -468,7 +553,7 @@ export default function App() {
   const retryDailyLesson = (topicId) => {
     setDailyLessons(prev => ({ ...prev, [topicId]: "loading" }));
     const topic = TOPICS.find(t => t.id === topicId);
-    generateLesson(topic.label)
+    generateLesson(topic.label, topic.id)
       .then(l => setDailyLessons(prev => ({ ...prev, [topicId]: l })))
       .catch(() => setDailyLessons(prev => ({ ...prev, [topicId]: "error" })));
   };
@@ -480,7 +565,7 @@ export default function App() {
     setActiveLesson("loading");
     setScreen("lesson");
     try {
-      const l = await generateLesson(topic.label, "pick a completely different angle than usual");
+      const l = await generateLesson(topic.label, null, "pick a completely different angle than usual");
       setExtraLessons(prev => ({ ...prev, [topic.id]: [...(prev[topic.id] || []), l] }));
       setActiveLesson(l);
     } catch {
