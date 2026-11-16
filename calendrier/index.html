@@ -21,10 +21,11 @@
   --danger: #c0281b;
   --on-cat: #ffffff;
 
-  --c-tournage: #e2552a;
-  --c-diffusion: #2456e6;
-  --c-lancement: #a42bb8;
-  --c-reunion: #0d8a62;
+  --c-tournoi: #e2552a;
+  --c-international: #cf2440;
+  --c-championnat: #9a6a00;
+  --c-equipeqc: #1f56d6;
+  --c-repechage: #8a2bb8;
   --c-autre: #5f6c85;
 
   --f-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
@@ -38,7 +39,7 @@
     --bg: #090d17; --surface: #121a2b; --surface-2: #0e1524; --ink: #e9eef8; --muted: #93a0bb; --line: #222d45;
     --accent: #7097ff; --accent-ink: #0a0f1b; --accent-soft: #1b2850; --hero: #121a2b; --hero-ink: #f3f6fc; --hero-muted: #93a0bb;
     --danger: #ff8b7c; --on-cat: #0a0f1b;
-    --c-tournage: #ff9067; --c-diffusion: #7097ff; --c-lancement: #e384f3; --c-reunion: #45d3a0; --c-autre: #a3aec4;
+    --c-tournoi: #ff9067; --c-international: #ff7a8c; --c-championnat: #f2c14e; --c-equipeqc: #7aa0ff; --c-repechage: #d48af0; --c-autre: #a3aec4;
     --shadow: 0 1px 2px rgb(0 0 0 / .3);
     color-scheme: dark;
   }
@@ -47,7 +48,7 @@
   --bg: #090d17; --surface: #121a2b; --surface-2: #0e1524; --ink: #e9eef8; --muted: #93a0bb; --line: #222d45;
   --accent: #7097ff; --accent-ink: #0a0f1b; --accent-soft: #1b2850; --hero: #121a2b; --hero-ink: #f3f6fc; --hero-muted: #93a0bb;
   --danger: #ff8b7c; --on-cat: #0a0f1b;
-  --c-tournage: #ff9067; --c-diffusion: #7097ff; --c-lancement: #e384f3; --c-reunion: #45d3a0; --c-autre: #a3aec4;
+  --c-tournoi: #ff9067; --c-international: #ff7a8c; --c-championnat: #f2c14e; --c-equipeqc: #7aa0ff; --c-repechage: #d48af0; --c-autre: #a3aec4;
   --shadow: 0 1px 2px rgb(0 0 0 / .3);
   color-scheme: dark;
 }
@@ -256,7 +257,7 @@ textarea { min-height: 84px; resize: vertical; }
   <form class="ev-form" id="evForm" novalidate>
     <h2 id="formTitle">Nouvel événement</h2>
     <label for="fTitle">Titre
-      <input id="fTitle" name="title" maxlength="140" autocomplete="off" placeholder="ex. Tournage clip – Montréal">
+      <input id="fTitle" name="title" maxlength="140" autocomplete="off" placeholder="ex. Challenge M15 AAA élite">
     </label>
     <p class="err-msg" id="titleErr" hidden>Donne un titre à l'événement.</p>
     <div class="row">
@@ -303,10 +304,11 @@ textarea { min-height: 84px; resize: vertical; }
 
 <script>
 const CATS = [
-  { id: "tournage", label: "Tournage" },
-  { id: "diffusion", label: "Diffusion / Live" },
-  { id: "lancement", label: "Lancement" },
-  { id: "reunion", label: "Réunion" },
+  { id: "tournoi", label: "Tournoi" },
+  { id: "international", label: "International" },
+  { id: "championnat", label: "Championnat canadien" },
+  { id: "equipeqc", label: "Équipe Québec" },
+  { id: "repechage", label: "Repêchage" },
   { id: "autre", label: "Autre" },
 ];
 const catOf = id => CATS.find(c => c.id === id) || CATS[CATS.length - 1];
@@ -337,7 +339,7 @@ let view = new Date(); view.setDate(1);
 let selected = todayIso;
 let mode = "month";
 let events = [];
-let db = null, canWrite = false, editingId = null, detailId = null, pickedCat = "tournage";
+let db = null, canWrite = false, editingId = null, detailId = null, pickedCat = "tournoi";
 
 try { if (localStorage.getItem("edgeqc-view") === "list") mode = "list"; } catch {}
 
@@ -522,7 +524,7 @@ function openForm(id, date) {
   $("fEndDate").value = e && spanDays(e) > 1 ? endOf(e) : "";
   $("fStart").value = e?.start || "";
   $("fEnd").value = e?.end || "";
-  pickedCat = e?.cat || "tournage"; renderCatPick();
+  pickedCat = e ? catOf(e.cat).id : "tournoi"; renderCatPick();
   $("fLoc").value = e?.loc || "";
   $("fNotes").value = e?.notes || "";
   $("delBtn").hidden = !e;
