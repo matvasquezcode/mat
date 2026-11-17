@@ -68,7 +68,15 @@ button { font: inherit; cursor: pointer; color: inherit; }
 .hero { background: var(--hero); color: var(--hero-ink); border-radius: var(--r); padding: 22px 24px; display: flex; flex-wrap: wrap; gap: 20px 32px; align-items: center; justify-content: space-between; border: 1px solid var(--line); }
 .brand small { display: block; font-size: 11.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--hero-muted); font-weight: 600; }
 .brand h1 { margin: 2px 0 0; font-family: var(--f-display); font-weight: 800; font-size: clamp(30px, 5.4vw, 46px); line-height: 1; letter-spacing: -.025em; }
-.brand h1 span { color: var(--c-diffusion); }
+.brand h1 span { color: var(--c-equipeqc); }
+.brand-row { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.switch { display: inline-flex; align-self: flex-start; background: rgb(255 255 255 / .08); border: 1px solid rgb(255 255 255 / .14); border-radius: 999px; padding: 3px; }
+.switch[hidden] { display: none; }
+.switch button { border: 0; background: transparent; color: var(--hero-muted); border-radius: 999px; padding: 6px 16px; font-weight: 700; font-size: 13.5px; display: inline-flex; align-items: center; gap: 7px; }
+.switch button i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .7; }
+.switch button[aria-pressed="true"] { background: var(--hero-ink); color: var(--hero); }
+.switch button:focus-visible { outline: 2px solid var(--hero-ink); outline-offset: 2px; }
+.lock { font-size: 12px; color: var(--hero-muted); }
 .next { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1 1 280px; max-width: 520px; background: rgb(255 255 255 / .06); border: 1px solid rgb(255 255 255 / .1); border-radius: 12px; padding: 12px 14px; text-align: left; }
 .next[hidden] { display: none; }
 .next .cal { flex: none; width: 52px; text-align: center; border-radius: 10px; background: var(--cat); color: var(--on-cat); padding: 5px 0 6px; line-height: 1.05; }
@@ -209,9 +217,20 @@ textarea { min-height: 84px; resize: vertical; }
 
 <div class="wrap" lang="fr">
   <header class="hero">
-    <div class="brand">
-      <small>Agenda des événements</small>
-      <h1>Edge<span>QC</span>Media</h1>
+    <div class="brand-row">
+      <div class="switch" role="group" aria-label="Choisir le calendrier" id="calSwitch" hidden>
+        <button type="button" id="calEdge" aria-pressed="true"><i></i>EdgeQC</button>
+        <button type="button" id="calPerso" aria-pressed="false"><i></i>Personnel</button>
+      </div>
+      <div class="brand" id="brandEdge">
+        <small>Agenda des événements</small>
+        <h1>Edge<span>QC</span>Media</h1>
+      </div>
+      <div class="brand" id="brandPerso" hidden>
+        <small>Calendrier personnel</small>
+        <h1>Mon <span>agenda</span></h1>
+        <div class="lock">🔒 Privé : toi seul le vois</div>
+      </div>
     </div>
     <button class="next" id="nextCard" type="button" hidden></button>
   </header>
@@ -303,7 +322,15 @@ textarea { min-height: 84px; resize: vertical; }
 </dialog>
 
 <script>
-const CATS = [
+const CATS_PERSO = [
+  { id: "rdv", label: "Rendez-vous", tok: "equipeqc" },
+  { id: "travail", label: "Travail / école", tok: "tournoi" },
+  { id: "sport", label: "Sport", tok: "international" },
+  { id: "sortie", label: "Sorties / amis", tok: "repechage" },
+  { id: "important", label: "Important", tok: "championnat" },
+  { id: "autre", label: "Autre" },
+];
+const CATS_EDGE = [
   { id: "tournoi", label: "Tournoi" },
   { id: "international", label: "International" },
   { id: "championnat", label: "Championnat canadien" },
@@ -311,8 +338,9 @@ const CATS = [
   { id: "repechage", label: "Repêchage" },
   { id: "autre", label: "Autre" },
 ];
+let CATS = CATS_EDGE;
 const catOf = id => CATS.find(c => c.id === id) || CATS[CATS.length - 1];
-const catVar = id => `var(--c-${catOf(id).id})`;
+const catVar = id => `var(--c-${catOf(id).tok || catOf(id).id})`;
 
 const $ = id => document.getElementById(id);
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
@@ -340,8 +368,28 @@ let selected = todayIso;
 let mode = "month";
 let events = [];
 let db = null, canWrite = false, editingId = null, detailId = null, pickedCat = "tournoi";
+let cal = "edge", uid = null, canEdge = false;
+const byCal = { edge: [], perso: [] };
+const statusByCal = { edge: "Chargement des événements…", perso: "Chargement de ton agenda…" };
+const errByCal = { edge: false, perso: false };
 
 try { if (localStorage.getItem("edgeqc-view") === "list") mode = "list"; } catch {}
+try { if (localStorage.getItem("edgeqc-cal") === "perso") cal = "perso"; } catch {}
+
+const colRef = () => cal === "perso" ? db.collection("data/users/" + uid) : db.collection("events");
+function applyCal() {
+  if (cal === "perso" && !uid) cal = "edge";
+  CATS = cal === "perso" ? CATS_PERSO : CATS_EDGE;
+  events = byCal[cal];
+  canWrite = cal === "perso" ? !!uid : canEdge;
+  $("addBtn").hidden = !canWrite;
+  $("brandEdge").hidden = cal !== "edge"; $("brandPerso").hidden = cal !== "perso";
+  $("calEdge").setAttribute("aria-pressed", cal === "edge"); $("calPerso").setAttribute("aria-pressed", cal === "perso");
+  $("status").textContent = statusByCal[cal]; $("status").classList.toggle("err", errByCal[cal]);
+  if (detailId && !events.some(e => e.id === detailId) && $("detailDlg").open) $("detailDlg").close();
+  renderLegend();
+}
+function setCal(c) { cal = c; try { localStorage.setItem("edgeqc-cal", c); } catch {} applyCal(); renderAll(); }
 
 const sortEvents = list => list.slice().sort((a, b) =>
   (a.date + (a.start || "00:00")).localeCompare(b.date + (b.start || "00:00")) || spanDays(b) - spanDays(a));
@@ -524,7 +572,7 @@ function openForm(id, date) {
   $("fEndDate").value = e && spanDays(e) > 1 ? endOf(e) : "";
   $("fStart").value = e?.start || "";
   $("fEnd").value = e?.end || "";
-  pickedCat = e ? catOf(e.cat).id : "tournoi"; renderCatPick();
+  pickedCat = e ? catOf(e.cat).id : CATS[0].id; renderCatPick();
   $("fLoc").value = e?.loc || "";
   $("fNotes").value = e?.notes || "";
   $("delBtn").hidden = !e;
@@ -561,7 +609,7 @@ $("evForm").addEventListener("submit", async ev => {
   };
   $("saveBtn").disabled = true; $("saveErr").hidden = true;
   try {
-    const col = db.collection("events");
+    const col = colRef();
     if (editingId) await col.doc(editingId).set(data); else await col.add(data);
     $("formDlg").close(); selectDay(date);
   } catch (err) {
@@ -575,7 +623,7 @@ $("evForm").addEventListener("submit", async ev => {
 $("delBtn").addEventListener("click", () => { $("confirmName").textContent = $("fTitle").value || "cet événement"; $("confirmBox").hidden = false; $("confirmYes").focus(); });
 $("confirmNo").addEventListener("click", () => { $("confirmBox").hidden = true; });
 $("confirmYes").addEventListener("click", async () => {
-  try { await db.collection("events").doc(editingId).delete(); $("formDlg").close(); }
+  try { await colRef().doc(editingId).delete(); $("formDlg").close(); }
   catch { $("saveErr").textContent = "La suppression n'a pas fonctionné. Réessaie."; $("saveErr").hidden = false; }
 });
 
@@ -606,6 +654,8 @@ $("nextBtn").addEventListener("click", () => { view = new Date(view.getFullYear(
 $("todayBtn").addEventListener("click", () => selectDay(todayIso));
 $("vMonth").addEventListener("click", () => setMode("month"));
 $("vList").addEventListener("click", () => setMode("list"));
+$("calEdge").addEventListener("click", () => setCal("edge"));
+$("calPerso").addEventListener("click", () => setCal("perso"));
 $("addBtn").addEventListener("click", () => openForm(null, selected));
 $("addDayBtn").addEventListener("click", () => openForm(null, selected));
 
@@ -619,18 +669,24 @@ renderLegend(); renderAll();
   if (!dbNs) { status.textContent = "Connecte-toi pour voir les événements."; return; }
   db = dbNs;
   const can = user ? await user.can("data.write") : null;
-  canWrite = can === null ? true : !!can;
-  $("addBtn").hidden = !canWrite;
-  renderAll();
-  const timer = setTimeout(() => { status.textContent = "Les événements ne répondent pas encore. Ils s'afficheront dès que la connexion revient."; }, 10000);
-  db.collection("events").onSnapshot(snap => {
-    events = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => typeof e.date === "string" && e.title);
-    if (!snap.metadata.fromCache) { clearTimeout(timer); status.textContent = `${events.length} événement${events.length > 1 ? "s" : ""} au calendrier`; status.classList.remove("err"); }
-    renderAll();
-  }, () => {
-    clearTimeout(timer);
-    status.textContent = "Impossible de charger les événements. Recharge la page plus tard.";
-    status.classList.add("err");
-  });
+  canEdge = can === null ? true : !!can;
+  uid = user ? await user.id() : null;
+  $("calSwitch").hidden = !uid;
+  applyCal(); renderAll();
+
+  const listen = (key, ref, label) => {
+    const timer = setTimeout(() => { statusByCal[key] = "Les événements ne répondent pas encore. Ils s'afficheront dès que la connexion revient."; if (cal === key) applyCal(); }, 10000);
+    ref.onSnapshot(snap => {
+      byCal[key] = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => typeof e.date === "string" && e.title);
+      if (!snap.metadata.fromCache) { clearTimeout(timer); const n = byCal[key].length; statusByCal[key] = `${n} événement${n > 1 ? "s" : ""} ${label}`; errByCal[key] = false; }
+      if (cal === key) { applyCal(); renderAll(); }
+    }, () => {
+      clearTimeout(timer);
+      statusByCal[key] = "Impossible de charger les événements. Recharge la page plus tard."; errByCal[key] = true;
+      if (cal === key) applyCal();
+    });
+  };
+  listen("edge", db.collection("events"), "au calendrier EdgeQC");
+  if (uid) listen("perso", db.collection("data/users/" + uid), "dans ton agenda");
 })();
 </script>
