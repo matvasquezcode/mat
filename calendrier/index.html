@@ -216,6 +216,25 @@ textarea { min-height: 84px; resize: vertical; }
 .detail dt { color: var(--muted); font-weight: 600; }
 .detail dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .detail dd::first-letter { text-transform: uppercase; }
+/* Chat */
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.chat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chat-head small { color: var(--muted); font-size: 12px; }
+.msgs { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }
+.msg { max-width: 92%; padding: 8px 11px; border-radius: 12px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.me { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px; }
+.msg.bot { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.bot.err { color: var(--danger); }
+.msg .steps { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.msg .undo { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.msg .undo button { border: 1px solid var(--line); background: var(--surface); border-radius: 7px; padding: 3px 9px; font-size: 12.5px; font-weight: 600; }
+.thinking { color: var(--muted); font-style: italic; }
+.ideas { display: flex; flex-wrap: wrap; gap: 6px; }
+.ideas button { border: 1px dashed var(--line); background: transparent; border-radius: 999px; padding: 5px 11px; font-size: 12.5px; color: var(--muted); text-align: left; }
+.ideas button:hover { border-color: var(--accent); color: var(--accent); }
+.chat-form { display: flex; flex-direction: column; gap: 8px; }
+.chat-form textarea { min-height: 64px; resize: vertical; }
+.chat-form .row2 { display: flex; gap: 8px; justify-content: flex-end; }
 @media (prefers-reduced-motion: no-preference) { .day, .ev, .btn, .bar, .lcard, .next { transition: background-color .12s, border-color .12s, filter .12s; } }
 </style>
 
@@ -261,6 +280,19 @@ textarea { min-height: 84px; resize: vertical; }
     </div>
 
     <aside class="side">
+      <div class="panel" id="chatPanel" hidden><section>
+        <div class="chat-head"><h3>Assistant</h3><small id="chatWhere"></small></div>
+        <div class="msgs" id="msgs" aria-live="polite"></div>
+        <div class="ideas" id="ideas"></div>
+        <form class="chat-form" id="chatForm" novalidate>
+          <label for="chatIn" class="sr">Message à l'assistant</label>
+          <textarea id="chatIn" placeholder="Dis-moi quoi ajouter, déplacer ou supprimer…"></textarea>
+          <div class="row2">
+            <button class="btn" type="button" id="chatStop" hidden>Arrêter</button>
+            <button class="btn primary" type="submit" id="chatSend">Envoyer</button>
+          </div>
+        </form>
+      </section></div>
       <div class="panel"><section>
         <h3 id="dayTitle">—</h3>
         <div class="list" id="dayList"></div>
@@ -396,7 +428,7 @@ function applyCal() {
   if (detailId && !events.some(e => e.id === detailId) && $("detailDlg").open) $("detailDlg").close();
   renderLegend();
 }
-function setCal(c) { cal = c; try { localStorage.setItem("edgeqc-cal", c); } catch {} applyCal(); renderAll(); }
+function setCal(c) { const changed = c !== cal; cal = c; try { localStorage.setItem("edgeqc-cal", c); } catch {} applyCal(); renderAll(); if (changed) resetChat(); refreshChatVisibility(); }
 
 const sortEvents = list => list.slice().sort((a, b) =>
   (a.date + (a.start || "00:00")).localeCompare(b.date + (b.start || "00:00")) || spanDays(b) - spanDays(a));
@@ -669,6 +701,194 @@ $("addDayBtn").addEventListener("click", () => openForm(null, selected));
 
 renderLegend(); renderAll();
 
+/* ---------- Chat assistant ---------- */
+let sampleFn = null, chatTurns = [], chatCtl = null, chatBusy = false;
+const fmtWeekday = new Intl.DateTimeFormat("fr-CA", { weekday: "long" });
+const IDEAS = {
+  edge: ["Ajoute un post « Scoreboard Challenge M15 » jeudi à 21 h", "Mets un récap du champion dimanche soir", "Déplace le Power Ranking M15 à vendredi"],
+  perso: ["Ajoute un rendez-vous chez le dentiste jeudi à 14 h", "Mets ma game de hockey samedi à 19 h", "Qu'est-ce que j'ai cette semaine ?"],
+};
+const colFor = c => c === "perso" ? db.collection("data/users/" + uid) : db.collection("events");
+const reDate = /^\d{4}-\d{2}-\d{2}$/, reTime = /^\d{2}:\d{2}$/;
+function cleanEvent(o, base = {}, cats = CATS) {
+  const v = { ...base, ...o };
+  const date = String(v.date || "");
+  if (!reDate.test(date)) throw new Error("date invalide (format AAAA-MM-JJ attendu)");
+  const title = String(v.title || "").trim().slice(0, 140);
+  if (!title) throw new Error("titre manquant");
+  const endDate = reDate.test(String(v.endDate || "")) && v.endDate > date ? v.endDate : "";
+  const cat = cats.some(c => c.id === v.cat) ? v.cat : "autre";
+  return {
+    title, date, endDate, cat,
+    start: reTime.test(String(v.start || "")) ? v.start : "",
+    end: reTime.test(String(v.end || "")) ? v.end : "",
+    loc: String(v.loc || "").trim().slice(0, 140),
+    notes: String(v.notes || "").trim().slice(0, 2000),
+  };
+}
+const stripId = e => { const { id, ...rest } = e; return rest; };
+
+function chatRules() {
+  const days = [];
+  for (let i = -7; i < 60; i++) { const k = addDays(todayIso, i); days.push(`${k} ${fmtWeekday.format(parseIso(k))}`); }
+  const list = sortEvents(events).map(e => ({ id: e.id, title: e.title, date: e.date, endDate: e.endDate || "", start: e.start || "", end: e.end || "", cat: e.cat, loc: e.loc || "", notes: (e.notes || "").slice(0, 160) }));
+  return [
+    cal === "edge"
+      ? "Tu es l'assistant du calendrier d'EdgeQC Media, un média hockey québécois. Un « post » (power ranking, scoreboard, récap, top pointeurs, annonce…) est une publication à faire sur les réseaux : utilise cat \"post\"."
+      : "Tu es l'assistant du calendrier personnel de l'utilisateur.",
+    "Utilise les outils pour ajouter, modifier ou supprimer des événements. Après avoir agi, réponds en français, en 1 à 3 phrases courtes, en confirmant ce qui a été fait (titre, jour en toutes lettres, heure s'il y en a une). Pour une simple question, réponds sans outil.",
+    "Si la date est vraiment ambiguë, pose une question au lieu de deviner. N'invente ni lieu ni heure non donnés. Pour modifier ou supprimer, utilise l'id exact d'un événement de la liste.",
+    `Aujourd'hui : ${todayIso} (${fmtWeekday.format(parseIso(todayIso))}). « Demain » = ${addDays(todayIso, 1)}.`,
+    "Jours (date ISO + jour de la semaine) :\n" + days.join("\n"),
+    "Catégories (champ cat) : " + CATS.map(c => `${c.id} = ${c.label}`).join(" ; "),
+    "Formats : date et endDate en AAAA-MM-JJ (endDate seulement si l'événement dure plusieurs jours, sinon vide) ; start et end en HH:MM sur 24 h, ou vide.",
+    "Événements actuels (JSON) :\n" + JSON.stringify(list),
+  ].join("\n\n");
+}
+
+function addMsg(role, text, cls = "") {
+  const m = el("div", `msg ${role} ${cls}`.trim(), text);
+  $("msgs").append(m); $("msgs").scrollTop = $("msgs").scrollHeight;
+  return m;
+}
+function renderIdeas() {
+  const show = !$("msgs").children.length;
+  $("ideas").replaceChildren(...(show ? IDEAS[cal].map(t => { const b = el("button", null, t); b.type = "button"; b.addEventListener("click", () => { $("chatIn").value = t; $("chatIn").focus(); }); return b; }) : []));
+  $("chatWhere").textContent = cal === "edge" ? "Calendrier EdgeQC" : "Ton agenda";
+}
+function resetChat() { if (chatCtl) chatCtl.abort(); chatTurns = []; $("msgs").replaceChildren(); renderIdeas(); }
+
+function chatTools(target, changes, stepsEl) {
+  const col = colFor(target);
+  const step = t => { stepsEl.textContent += (stepsEl.textContent ? "\n" : "") + t; $("msgs").scrollTop = $("msgs").scrollHeight; };
+  const find = id => byCal[target].find(e => e.id === String(id));
+  const cats = target === "perso" ? CATS_PERSO : CATS_EDGE;
+  return [
+    {
+      name: "add_events",
+      description: "Ajoute un ou plusieurs événements au calendrier. Retourne les ids créés.",
+      inputSchema: { type: "object", required: ["events"], properties: { events: { type: "array", items: { type: "object", required: ["title", "date"], properties: {
+        title: { type: "string" }, date: { type: "string", description: "AAAA-MM-JJ" }, endDate: { type: "string", description: "AAAA-MM-JJ, seulement si plusieurs jours" },
+        start: { type: "string", description: "HH:MM" }, end: { type: "string", description: "HH:MM" }, cat: { type: "string" }, loc: { type: "string" }, notes: { type: "string" } } } } } },
+      async execute(input, ctx) {
+        const list = Array.isArray(input.events) ? input.events.slice(0, 30) : [];
+        if (!list.length) throw new Error("aucun événement fourni");
+        const ids = [];
+        for (const raw of list) {
+          if (ctx.signal.aborted) break;
+          const data = cleanEvent(raw, {}, cats);
+          const ref = await col.add(data);
+          changes.push({ type: "add", id: ref.id }); ids.push(ref.id);
+          step(`＋ ${data.title} (${fmtShort.format(parseIso(data.date))})`);
+        }
+        return { ajoutés: ids };
+      },
+    },
+    {
+      name: "update_event",
+      description: "Modifie un événement existant (par son id). Ne passe que les champs à changer. Retourne l'événement modifié.",
+      inputSchema: { type: "object", required: ["id", "changes"], properties: { id: { type: "string" }, changes: { type: "object", properties: {
+        title: { type: "string" }, date: { type: "string" }, endDate: { type: "string" }, start: { type: "string" }, end: { type: "string" }, cat: { type: "string" }, loc: { type: "string" }, notes: { type: "string" } } } } },
+      async execute(input) {
+        const prev = find(input.id); if (!prev) throw new Error("aucun événement avec cet id");
+        const data = cleanEvent(input.changes || {}, stripId(prev), cats);
+        await col.doc(prev.id).set(data);
+        changes.push({ type: "update", id: prev.id, prev: stripId(prev) });
+        step(`✎ ${data.title} (${fmtShort.format(parseIso(data.date))})`);
+        return { id: prev.id, ...data };
+      },
+    },
+    {
+      name: "delete_event",
+      description: "Supprime un événement (par son id). L'utilisateur peut annuler ensuite.",
+      inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
+      async execute(input) {
+        const prev = find(input.id); if (!prev) throw new Error("aucun événement avec cet id");
+        await col.doc(prev.id).delete();
+        changes.push({ type: "delete", id: prev.id, prev: stripId(prev) });
+        step(`✕ ${prev.title}`);
+        return { supprimé: prev.id };
+      },
+    },
+  ];
+}
+
+async function undoChanges(target, changes, box) {
+  box.querySelector("button").disabled = true;
+  const col = colFor(target);
+  try {
+    for (const c of changes.slice().reverse()) {
+      if (c.type === "add") await col.doc(c.id).delete();
+      else await col.doc(c.id).set(c.prev);
+    }
+    box.replaceChildren("Changements annulés.");
+  } catch {
+    box.replaceChildren("L'annulation n'a pas fonctionné en entier. Vérifie le calendrier.");
+  }
+}
+
+async function sendChat(text) {
+  if (chatBusy || !sampleFn) return;
+  chatBusy = true; $("chatSend").disabled = true; $("chatStop").hidden = false;
+  addMsg("me", text); renderIdeas();
+  chatTurns.push({ role: "user", content: text });
+  chatTurns = chatTurns.slice(-12);
+  if (chatTurns[0]?.role !== "user") chatTurns.shift();
+  const target = cal, changes = [];
+  const bubble = addMsg("bot", "", "thinking"); bubble.textContent = "Je regarde ça…";
+  const steps = el("span", "steps");
+  chatCtl = new AbortController();
+  try {
+    const { text: answer } = await sampleFn([{ role: "user", content: chatRules() }, ...chatTurns], {
+      modelTier: "quick", cache: false, signal: chatCtl.signal, tools: chatTools(target, changes, steps),
+      onText: ({ text: t }) => { bubble.classList.remove("thinking"); bubble.textContent = t; if (steps.textContent) bubble.append(steps); },
+    });
+    bubble.classList.remove("thinking"); bubble.textContent = answer;
+    chatTurns.push({ role: "assistant", content: answer });
+  } catch (e) {
+    bubble.classList.remove("thinking");
+    const copy = {
+      not_granted: "L'assistant n'a pas l'autorisation d'utiliser Claude sur cette page. Tu peux l'activer dans le menu Autorisations de la page.",
+      sampling_disabled: "Claude n'est pas disponible pour ce compte.",
+      rate_limited: "Trop de demandes d'un coup. Attends un moment et renvoie ton message.",
+      session_expired: "Ta session a expiré. Reconnecte-toi à Claude puis réessaie.",
+      refused: "Je ne peux pas traiter cette demande. Reformule-la autrement.",
+    }[e?.code];
+    if (e?.code === "cancelled") bubble.textContent = (e.text || "") + (e.text ? "\n" : "") + "(arrêté)";
+    else { bubble.classList.add("err"); bubble.textContent = copy || "Je n'ai pas pu répondre. Renvoie ton message."; }
+    if (["not_granted", "sampling_disabled", "tools_unavailable"].includes(e?.code)) $("chatForm").hidden = true;
+    chatTurns.pop();
+  } finally {
+    if (steps.textContent && !bubble.contains(steps)) bubble.append(steps);
+    if (changes.length) {
+      const box = el("div", "undo");
+      const b = el("button", null, "Annuler"); b.type = "button";
+      b.addEventListener("click", () => undoChanges(target, changes, box));
+      box.append(`${changes.length} changement${changes.length > 1 ? "s" : ""}`, b);
+      bubble.append(box);
+    }
+    chatBusy = false; $("chatSend").disabled = false; $("chatStop").hidden = true; chatCtl = null;
+    $("msgs").scrollTop = $("msgs").scrollHeight;
+  }
+}
+$("chatForm").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const t = $("chatIn").value.trim(); if (!t) return;
+  $("chatIn").value = ""; sendChat(t);
+});
+$("chatIn").addEventListener("keydown", ev => { if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $("chatForm").requestSubmit(); } });
+$("chatStop").addEventListener("click", () => chatCtl?.abort());
+
+async function initChat() {
+  const s = await claude.use("sample").catch(() => null);
+  if (!s) return;
+  const lim = await s.limits().catch(() => null);
+  if (!lim?.tools) return;
+  sampleFn = s;
+  refreshChatVisibility();
+}
+function refreshChatVisibility() { $("chatPanel").hidden = !(sampleFn && canWrite); renderIdeas(); }
+
 /* ---------- Data ---------- */
 (async () => {
   const status = $("status");
@@ -681,6 +901,7 @@ renderLegend(); renderAll();
   uid = user ? await user.id() : null;
   $("calSwitch").hidden = !uid;
   applyCal(); renderAll();
+  initChat();
 
   const listen = (key, ref, label) => {
     const timer = setTimeout(() => { statusByCal[key] = "Les événements ne répondent pas encore. Ils s'afficheront dès que la connexion revient."; if (cal === key) applyCal(); }, 10000);
