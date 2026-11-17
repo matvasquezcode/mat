@@ -283,6 +283,8 @@ textarea { min-height: 84px; resize: vertical; }
       <div class="panel" id="chatPanel" hidden><section>
         <div class="chat-head"><h3>Assistant</h3><small id="chatWhere"></small></div>
         <div class="msgs" id="msgs" aria-live="polite"></div>
+        <div class="msg bot" id="chatOff" hidden>L'assistant est désactivé parce que l'accès à Claude a été refusé pour cette page.
+<span id="chatOffHelp"></span><div class="undo"><button type="button" id="chatFix">Réactiver l'assistant</button></div></div>
         <div class="ideas" id="ideas"></div>
         <form class="chat-form" id="chatForm" novalidate>
           <label for="chatIn" class="sr">Message à l'assistant</label>
@@ -856,7 +858,8 @@ async function sendChat(text) {
     }[e?.code];
     if (e?.code === "cancelled") bubble.textContent = (e.text || "") + (e.text ? "\n" : "") + "(arrêté)";
     else { bubble.classList.add("err"); bubble.textContent = copy || "Je n'ai pas pu répondre. Renvoie ton message."; }
-    if (["not_granted", "sampling_disabled", "tools_unavailable"].includes(e?.code)) $("chatForm").hidden = true;
+    if (e?.code === "not_granted") { bubble.remove(); showChatOff(true); }
+    else if (["sampling_disabled", "tools_unavailable"].includes(e?.code)) $("chatForm").hidden = true;
     chatTurns.pop();
   } finally {
     if (steps.textContent && !bubble.contains(steps)) bubble.append(steps);
@@ -886,7 +889,28 @@ async function initChat() {
   if (!lim?.tools) return;
   sampleFn = s;
   refreshChatVisibility();
+  const perms = await claude.use("permissions").catch(() => null);
+  const st = perms ? await perms.state("sample").catch(() => null) : null;
+  if (st === "denied") showChatOff(true);
 }
+function showChatOff(on) {
+  $("chatOff").hidden = !on; $("chatForm").hidden = on; $("ideas").hidden = on;
+  if (on) $("msgs").scrollTop = $("msgs").scrollHeight;
+}
+$("chatFix").addEventListener("click", async () => {
+  const perms = await claude.use("permissions").catch(() => null);
+  $("chatOffHelp").textContent = "";
+  try {
+    if (!perms) throw new Error();
+    await perms.manage();
+  } catch {
+    $("chatOffHelp").textContent = "Ouvre le menu Autorisations de la page et active Claude, puis recharge la page.";
+    return;
+  }
+  const st = await perms.state("sample").catch(() => null);
+  if (st === "granted" || st === "prompt") showChatOff(false);
+  else $("chatOffHelp").textContent = "Claude est encore refusé. Active-le dans le panneau qui vient de s'ouvrir, puis clique encore ici.";
+});
 function refreshChatVisibility() { $("chatPanel").hidden = !(sampleFn && canWrite); renderIdeas(); }
 
 /* ---------- Data ---------- */
