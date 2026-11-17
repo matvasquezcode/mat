@@ -137,6 +137,8 @@ button { font: inherit; cursor: pointer; color: inherit; }
 .bar .ln { display: block; font-weight: 500; font-size: 11.5px; opacity: .85; }
 .bar.single .tm { color: var(--cat); opacity: 1; }
 .bar:hover { filter: brightness(1.06); }
+.bar.post { box-shadow: inset 0 0 0 1.5px var(--cat); }
+.pbadge { display: inline-block; font-family: var(--f-body); font-size: 9.5px; font-weight: 800; letter-spacing: .1em; line-height: 1; padding: 3px 5px 2px; border-radius: 4px; background: var(--cat); color: var(--on-cat); margin-right: 6px; vertical-align: 2px; }
 .bar.single:hover { background: color-mix(in srgb, var(--cat) 24%, var(--surface)); filter: none; }
 @media (max-width: 640px) {
   .week { min-height: 76px; }
@@ -147,6 +149,7 @@ button { font: inherit; cursor: pointer; color: inherit; }
   .bar { margin: 0 2px 3px; padding: 3px 4px; font-size: 10.5px; line-height: 1.2; border-radius: 4px; }
   .bar.cont-l { margin-left: 0; } .bar.cont-r { margin-right: 0; }
   .bar .tm, .bar .ln { display: none; }
+  .bar .pbadge { display: block; width: max-content; margin: 0 0 2px; font-size: 8px; padding: 2px 4px 1px; }
 }
 
 /* Side */
@@ -332,7 +335,7 @@ const CATS_PERSO = [
   { id: "autre", label: "Autre" },
 ];
 const CATS_EDGE = [
-  { id: "post", label: "Publication" },
+  { id: "post", label: "Post à publier" },
   { id: "tournoi", label: "Tournoi" },
   { id: "international", label: "International" },
   { id: "championnat", label: "Championnat canadien" },
@@ -341,6 +344,8 @@ const CATS_EDGE = [
   { id: "autre", label: "Autre" },
 ];
 let CATS = CATS_EDGE;
+const isPost = e => cal === "edge" && e.cat === "post";
+const titleEl = e => { const t = el("div", "t"); if (isPost(e)) t.append(el("span", "pbadge", "POST")); t.append(e.title); return t; };
 const catOf = id => CATS.find(c => c.id === id) || CATS[CATS.length - 1];
 const catVar = id => `var(--c-${catOf(id).tok || catOf(id).id})`;
 
@@ -450,6 +455,7 @@ function renderMonth() {
       bar.style.gridRow = String(lane + 2);
       if (e.date < wStart) bar.classList.add("cont-l");
       if (endOf(e) > wEnd) bar.classList.add("cont-r");
+      if (isPost(e)) { bar.classList.add("post"); bar.append(el("span", "pbadge", "POST")); }
       if (e.start && (!multi || e.date >= wStart)) bar.append(el("span", "tm", e.start));
       bar.append((e.date < wStart ? "← " : "") + e.title + (endOf(e) > wEnd ? " →" : ""));
       if (e.loc && (c1 - c0 >= 1 || !multi)) bar.append(el("span", "ln", e.loc));
@@ -488,7 +494,7 @@ function listCard(e) {
   cal.append(el("b", null, d.getDate()), el("span", null, fmtMon.format(d).replace(".", "")));
   if (spanDays(e) > 1) cal.append(el("small", null, `${spanDays(e)} jours`));
   const body = el("div"); body.style.minWidth = "0";
-  body.append(el("span", "tag", catOf(e.cat).label), el("div", "t", e.title));
+  body.append(el("span", "tag", catOf(e.cat).label), titleEl(e));
   const bits = [rangeText(e)];
   if (e.start) bits.push(fmtTime(e.start) + (e.end ? " à " + fmtTime(e.end) : ""));
   if (e.loc) bits.push(e.loc);
@@ -506,7 +512,7 @@ function evButton(e, showDate) {
   if (showDate) w.append(el("b", null, fmtShort.format(parseIso(e.date))));
   w.append(spanDays(e) > 1 ? `${spanDays(e)} jours` : (e.start || "Journée"));
   const body = el("div"); body.style.minWidth = "0";
-  body.append(el("span", "tag", catOf(e.cat).label), el("div", "t", e.title));
+  body.append(el("span", "tag", catOf(e.cat).label), titleEl(e));
   const meta = [];
   if (spanDays(e) > 1) meta.push(rangeText(e).split(" · ")[0]);
   if (e.loc) meta.push(e.loc);
@@ -533,7 +539,7 @@ function renderSide() {
   const cal = el("div", "cal"); cal.append(el("b", null, nd.getDate()), el("span", null, fmtMon.format(nd).replace(".", "")));
   const info = el("div", "info");
   const live = nx.date <= todayIso;
-  info.append(el("div", "lbl", live ? "En cours" : "Prochain événement"), el("div", "ttl", nx.title));
+  info.append(el("div", "lbl", isPost(nx) ? (live ? "Post à publier aujourd'hui" : "Prochain post") : (live ? "En cours" : "Prochain événement")), el("div", "ttl", nx.title));
   const sub = [rangeText(nx)]; if (nx.start) sub.push(fmtTime(nx.start)); if (nx.loc) sub.push(nx.loc);
   info.append(el("div", "sub", sub.join(" · ")));
   card.replaceChildren(cal, info);
