@@ -217,6 +217,22 @@ textarea { min-height: 84px; resize: vertical; }
 .detail dt { color: var(--muted); font-weight: 600; }
 .detail dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .detail dd::first-letter { text-transform: uppercase; }
+/* Watchlist */
+.watch-head { display: flex; align-items: center; gap: 8px; }
+.watch-head .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.watch-head small { margin-left: auto; color: var(--muted); font-size: 12px; }
+.witem { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; border: 1px dashed color-mix(in srgb, var(--cat) 55%, var(--line)); border-radius: 10px; padding: 10px 12px; box-shadow: inset 4px 0 0 var(--cat); }
+.witem .t { font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.witem .when { font-size: 12.5px; color: var(--cat); font-weight: 600; margin-top: 2px; }
+.witem .meta { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; white-space: pre-wrap; margin-top: 2px; }
+.wactions { display: flex; flex-wrap: wrap; gap: 6px; }
+.mini { border: 1px solid var(--line); background: var(--surface); border-radius: 7px; padding: 4px 9px; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.mini:hover { border-color: var(--muted); }
+.mini.danger { color: var(--danger); }
+.mini:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.watch-add { display: flex; flex-direction: column; gap: 6px; }
+.watch-add .row2 { display: flex; gap: 6px; }
+.watch-add .row2 input { flex: 1; }
 /* Chat */
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .chat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -293,6 +309,19 @@ textarea { min-height: 84px; resize: vertical; }
           <div class="row2">
             <button class="btn" type="button" id="chatStop" hidden>Arrêter</button>
             <button class="btn primary" type="submit" id="chatSend">Envoyer</button>
+          </div>
+        </form>
+      </section></div>
+      <div class="panel" id="watchPanel"><section>
+        <div class="watch-head"><span class="dot" aria-hidden="true"></span><h3>À l'affût</h3><small>Annonces sans date</small></div>
+        <div class="list" id="watchList"></div>
+        <form class="watch-add" id="watchForm" novalidate hidden>
+          <label for="wTitle" class="sr">Quoi surveiller</label>
+          <input id="wTitle" maxlength="140" autocomplete="off" placeholder="Quoi surveiller (ex. sortie d'un alignement)">
+          <div class="row2">
+            <label for="wWhen" class="sr">Prévu vers</label>
+            <input id="wWhen" maxlength="80" autocomplete="off" placeholder="Prévu vers (optionnel)">
+            <button class="btn" type="submit">Ajouter</button>
           </div>
         </form>
       </section></div>
@@ -413,6 +442,8 @@ let events = [];
 let db = null, canWrite = false, editingId = null, detailId = null, pickedCat = "tournoi";
 let cal = "edge", uid = null, canEdge = false;
 const byCal = { edge: [], perso: [] };
+const watchByCal = { edge: [], perso: [] };
+let pendingWatchId = null, armedRemove = null;
 const statusByCal = { edge: "Chargement des événements…", perso: "Chargement de ton agenda…" };
 const errByCal = { edge: false, perso: false };
 
@@ -589,6 +620,7 @@ function renderAll() {
   $("vMonth").setAttribute("aria-pressed", mode === "month"); $("vList").setAttribute("aria-pressed", mode === "list");
   if (mode === "month") renderMonth(); else renderList();
   renderSide();
+  renderWatch();
 }
 function selectDay(key) {
   selected = key;
@@ -608,7 +640,7 @@ function renderCatPick() {
   }));
 }
 function openForm(id, date) {
-  editingId = id;
+  editingId = id; pendingWatchId = null;
   const e = id ? events.find(x => x.id === id) : null;
   $("formTitle").textContent = e ? "Modifier l'événement" : "Nouvel événement";
   $("fTitle").value = e?.title || "";
@@ -655,6 +687,7 @@ $("evForm").addEventListener("submit", async ev => {
   try {
     const col = colRef();
     if (editingId) await col.doc(editingId).set(data); else await col.add(data);
+    if (pendingWatchId) { const w = pendingWatchId; pendingWatchId = null; await col.doc(w).delete().catch(() => {}); }
     $("formDlg").close(); selectDay(date);
   } catch (err) {
     $("saveErr").textContent = err?.code === "invalid_argument"
@@ -705,6 +738,52 @@ $("addDayBtn").addEventListener("click", () => openForm(null, selected));
 
 renderLegend(); renderAll();
 
+/* ---------- Watchlist ---------- */
+function renderWatch() {
+  const list = watchByCal[cal];
+  $("watchForm").hidden = !canWrite;
+  if (!list.length) {
+    $("watchList").replaceChildren(el("p", "empty", canWrite
+      ? "Rien à surveiller pour l'instant. Ajoute une annonce attendue sans date précise, comme la sortie d'un alignement."
+      : "Rien à surveiller pour l'instant."));
+    return;
+  }
+  $("watchList").replaceChildren(...list.map(w => {
+    const it = el("div", "witem"); it.style.setProperty("--cat", catVar(w.cat));
+    const body = el("div"); body.style.minWidth = "0";
+    body.append(el("span", "tag", catOf(w.cat).label), el("div", "t", w.title));
+    if (w.expected) body.append(el("div", "when", "Prévu : " + w.expected));
+    if (w.notes) body.append(el("div", "meta", w.notes));
+    it.append(body);
+    if (canWrite) {
+      const acts = el("div", "wactions");
+      const plan = el("button", "mini", "C'est sorti → planifier"); plan.type = "button";
+      plan.addEventListener("click", () => {
+        openForm(null, todayIso);
+        $("fTitle").value = w.title; $("fNotes").value = w.notes || "";
+        if (cal === "edge") { pickedCat = "post"; renderCatPick(); }
+        pendingWatchId = w.id;
+      });
+      const rm = el("button", "mini danger", armedRemove === w.id ? "Confirmer ?" : "Retirer"); rm.type = "button";
+      rm.addEventListener("click", async () => {
+        if (armedRemove !== w.id) { armedRemove = w.id; renderWatch(); return; }
+        armedRemove = null;
+        try { await colRef().doc(w.id).delete(); } catch { rm.textContent = "Échec, réessaie"; }
+      });
+      acts.append(plan, rm); it.append(acts);
+    }
+    return it;
+  }));
+}
+$("watchForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const title = $("wTitle").value.trim(); if (!title) { $("wTitle").focus(); return; }
+  const data = { watch: true, title: title.slice(0, 140), expected: $("wWhen").value.trim().slice(0, 80), cat: cal === "edge" ? "post" : "autre", notes: "" };
+  try { await colRef().add(data); $("wTitle").value = ""; $("wWhen").value = ""; }
+  catch { alertLine("L'ajout n'a pas fonctionné. Réessaie."); }
+});
+function alertLine(t) { const p = el("p", "err-msg", t); $("watchForm").append(p); setTimeout(() => p.remove(), 5000); }
+
 /* ---------- Chat assistant ---------- */
 let sampleFn = null, chatTurns = [], chatCtl = null, chatBusy = false;
 const fmtWeekday = new Intl.DateTimeFormat("fr-CA", { weekday: "long" });
@@ -747,6 +826,7 @@ function chatRules() {
     "Catégories (champ cat) : " + CATS.map(c => `${c.id} = ${c.label}`).join(" ; "),
     "Formats : date et endDate en AAAA-MM-JJ (endDate seulement si l'événement dure plusieurs jours, sinon vide) ; start et end en HH:MM sur 24 h, ou vide.",
     "Événements actuels (JSON) :\n" + JSON.stringify(list),
+    "Liste « À l'affût » (annonces attendues sans date précise ; ajoute-y avec add_watch quand l'utilisateur dit de surveiller ou rester à l'affût de quelque chose sans date ; quand une annonce sort, crée l'événement puis supprime l'élément avec delete_event) :\n" + JSON.stringify(watchByCal[cal].map(w => ({ id: w.id, title: w.title, expected: w.expected || "", cat: w.cat }))),
   ].join("\n\n");
 }
 
@@ -766,6 +846,7 @@ function chatTools(target, changes, stepsEl) {
   const col = colFor(target);
   const step = t => { stepsEl.textContent += (stepsEl.textContent ? "\n" : "") + t; $("msgs").scrollTop = $("msgs").scrollHeight; };
   const find = id => byCal[target].find(e => e.id === String(id));
+  const findAny = id => find(id) || watchByCal[target].find(e => e.id === String(id));
   const cats = target === "perso" ? CATS_PERSO : CATS_EDGE;
   return [
     {
@@ -803,11 +884,24 @@ function chatTools(target, changes, stepsEl) {
       },
     },
     {
+      name: "add_watch",
+      description: "Ajoute un élément à la liste « À l'affût » : une annonce ou une sortie attendue sans date précise. Retourne l'id.",
+      inputSchema: { type: "object", required: ["title"], properties: { title: { type: "string" }, expected: { type: "string", description: "période approximative, ex. « décembre 2026 », ou vide" }, cat: { type: "string" }, notes: { type: "string" } } },
+      async execute(input) {
+        const title = String(input.title || "").trim().slice(0, 140); if (!title) throw new Error("titre manquant");
+        const data = { watch: true, title, expected: String(input.expected || "").trim().slice(0, 80), cat: cats.some(c => c.id === input.cat) ? input.cat : (target === "edge" ? "post" : "autre"), notes: String(input.notes || "").trim().slice(0, 1000) };
+        const ref = await col.add(data);
+        changes.push({ type: "add", id: ref.id });
+        step(`👁 ${title}`);
+        return { id: ref.id };
+      },
+    },
+    {
       name: "delete_event",
-      description: "Supprime un événement (par son id). L'utilisateur peut annuler ensuite.",
+      description: "Supprime un événement ou un élément « À l'affût » (par son id). L'utilisateur peut annuler ensuite.",
       inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
       async execute(input) {
-        const prev = find(input.id); if (!prev) throw new Error("aucun événement avec cet id");
+        const prev = findAny(input.id); if (!prev) throw new Error("aucun événement avec cet id");
         await col.doc(prev.id).delete();
         changes.push({ type: "delete", id: prev.id, prev: stripId(prev) });
         step(`✕ ${prev.title}`);
@@ -932,7 +1026,9 @@ function refreshChatVisibility() { $("chatPanel").hidden = !(sampleFn && canWrit
   const listen = (key, ref, label) => {
     const timer = setTimeout(() => { statusByCal[key] = "Les événements ne répondent pas encore. Ils s'afficheront dès que la connexion revient."; if (cal === key) applyCal(); }, 10000);
     ref.onSnapshot(snap => {
-      byCal[key] = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => typeof e.date === "string" && e.title);
+      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      byCal[key] = all.filter(e => !e.watch && typeof e.date === "string" && e.title);
+      watchByCal[key] = all.filter(e => e.watch === true && e.title);
       if (!snap.metadata.fromCache) { clearTimeout(timer); const n = byCal[key].length; statusByCal[key] = `${n} événement${n > 1 ? "s" : ""} ${label}`; errByCal[key] = false; }
       if (cal === key) { applyCal(); renderAll(); }
     }, () => {
